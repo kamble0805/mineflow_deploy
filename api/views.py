@@ -9,11 +9,13 @@ from django.db.models import Q, Count, Avg
 from django.utils import timezone
 from datetime import datetime, timedelta
 from .models import UserProfile, Truck, Customer, Order, Dispatch, Material, ExceptionLog, DispatchMedia
+from rest_framework import serializers
 from .serializers import (
     UserSerializer, UserRegistrationSerializer, TruckSerializer, CustomerSerializer,
     OrderSerializer, MaterialSerializer, DispatchSerializer, ExceptionLogSerializer,
     KPIDashboardSerializer, OperatorSerializer, WorkflowStepSerializer, DispatchMediaSerializer
 )
+
 
 class UserRegistrationView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -209,6 +211,9 @@ class DispatchViewSet(viewsets.ModelViewSet):
         dispatch.status = new_status
         
         if new_status == 'in_transit' and not dispatch.departure_time:
+            # This logic is better handled by signals or the specific action methods.
+            # For example, start_journey action sets start_journey_time.
+            # Departure time should be set when the journey actually starts.
             dispatch.departure_time = timezone.now()
         elif new_status == 'completed' and not dispatch.arrival_time:
             dispatch.arrival_time = timezone.now()
@@ -273,16 +278,14 @@ class DispatchViewSet(viewsets.ModelViewSet):
                           status=status.HTTP_400_BAD_REQUEST)
         
         gross_weight = request.data.get('gross_weight')
-        media_data = request.data.get('media', '')
         
         if not gross_weight:
             return Response({'error': 'Gross weight is required'}, 
-                          status=status.HTTP_400_BAD_REQUEST)
+                           status=status.HTTP_400_BAD_REQUEST)
         
         dispatch.status = 'weigh_in'
         dispatch.weigh_in_time = timezone.now()
         dispatch.gross_weight = float(gross_weight)
-        dispatch.weigh_in_media = media_data
         dispatch.save()
         
         # Handle image uploads
@@ -296,7 +299,7 @@ class DispatchViewSet(viewsets.ModelViewSet):
                     description=request.data.get('description', '')
                 )
         
-        serializer = self.get_serializer(dispatch)
+        serializer = self.get_serializer(dispatch, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
@@ -308,11 +311,8 @@ class DispatchViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Dispatch must be weighed in to unload'}, 
                           status=status.HTTP_400_BAD_REQUEST)
         
-        media_data = request.data.get('media', '')
-        
         dispatch.status = 'unload'
         dispatch.unload_time = timezone.now()
-        dispatch.unload_media = media_data
         dispatch.save()
         
         # Handle image uploads
@@ -326,7 +326,7 @@ class DispatchViewSet(viewsets.ModelViewSet):
                     description=request.data.get('description', '')
                 )
         
-        serializer = self.get_serializer(dispatch)
+        serializer = self.get_serializer(dispatch, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
@@ -339,7 +339,6 @@ class DispatchViewSet(viewsets.ModelViewSet):
                           status=status.HTTP_400_BAD_REQUEST)
         
         tare_weight = request.data.get('tare_weight')
-        media_data = request.data.get('media', '')
         
         if not tare_weight:
             return Response({'error': 'Tare weight is required'}, 
@@ -348,7 +347,6 @@ class DispatchViewSet(viewsets.ModelViewSet):
         dispatch.status = 'weigh_out'
         dispatch.weigh_out_time = timezone.now()
         dispatch.tare_weight = float(tare_weight)
-        dispatch.weigh_out_media = media_data
         dispatch.save()
         
         # Handle image uploads
@@ -362,7 +360,7 @@ class DispatchViewSet(viewsets.ModelViewSet):
                     description=request.data.get('description', '')
                 )
         
-        serializer = self.get_serializer(dispatch)
+        serializer = self.get_serializer(dispatch, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
@@ -378,32 +376,10 @@ class DispatchViewSet(viewsets.ModelViewSet):
         dispatch.completion_time = timezone.now()
         dispatch.arrival_time = timezone.now()
         dispatch.save()
+        # The post_save signal on the Dispatch model will automatically handle
+        # updating the order status, material stock, and truck status.
         
-        # Update related order status
-        dispatch.order.status = 'completed'
-        dispatch.order.save()
-        
-        # Update material stock (reduce by order quantity)
-        try:
-            material = Material.objects.get(name=dispatch.order.material_type)
-            material.stock_quantity -= dispatch.order.quantity
-            if material.stock_quantity < 0:
-                material.stock_quantity = 0  # Prevent negative stock
-            material.save()
-        except Material.DoesNotExist:
-            # Create material if it doesn't exist
-            Material.objects.create(
-                name=dispatch.order.material_type,
-                stock_quantity=0,
-                unit='tons'
-            )
-        
-        # Return truck to idle
-        truck = dispatch.truck
-        truck.status = 'idle'
-        truck.save()
-        
-        serializer = self.get_serializer(dispatch)
+        serializer = self.get_serializer(dispatch, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])

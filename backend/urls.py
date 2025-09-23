@@ -24,6 +24,5 @@ urlpatterns = [
     path('api/', include('api.urls')),
 ]
 
-# Serve media files during development
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Serve media files regardless of DEBUG (suitable for small deployments on Render)
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
